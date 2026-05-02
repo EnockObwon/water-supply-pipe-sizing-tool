@@ -1,0 +1,191 @@
+# STAGE 4 — TRANSMISSION SHEET
+# Transmission main pipe sizing: well → storage reservoir
+# Run AFTER Stage 3.
+
+ws_tr = wb.create_sheet("TRANSMISSION")
+ws_tr.sheet_view.showGridLines = False
+NC_TR = 22   # columns A–V
+
+hdr(ws_tr, 1, "TRANSMISSION MAIN PIPE SIZING  —  Hazen-Williams Method", 1, NC_TR, sz=13, ht=30)
+ws_tr.merge_cells(f'A1:{get_column_letter(NC_TR)}1')
+ws_tr.cell(row=2, column=1).value = (
+    "HDPE PE100  |  Auto Pipe OD & Pressure Rating (PN) Selection  |  Uganda WSS DM 2nd Ed.")
+ws_tr.cell(row=2, column=1).font = FN(sz=10, it=True, c=C_MED)
+ws_tr.merge_cells(f'A2:{get_column_letter(NC_TR)}2')
+ws_tr.row_dimensions[2].height = 18; ws_tr.row_dimensions[3].height = 8
+
+# DESIGN BASIS 
+subhdr(ws_tr, 4, "DESIGN BASIS", 1, 12); ws_tr.merge_cells('A4:L4')
+
+basis_fields = [
+    (TR_R['SRC'], "Source Description  (e.g. Borehole BH-1 / Production Well)",  None,                  "",      ""),
+    (TR_R['DST'], "Destination Description  (e.g. Service Reservoir SR-1)",       None,                  "",      ""),
+    (TR_R['Q'],   "Total Design Flow  Q",                                          None,                  "L/s",   "Pump design capacity"),
+    (TR_R['HGL'], "HGL at Supply Point",                                           None,                  "m ASL",
+     "Pumped: enter pump TDH + dynamic WL elevation (from TDH_CALC).  Gravity: enter reservoir HWL."),
+    (TR_R['S'],   "Allowable Head Loss Gradient",                                 f"={p('STRANS')}",      "m/km",  "From PARAMETERS — override if needed"),
+    (TR_R['RES'], "Min. Residual Head at Destination",                            f"={p('RRES')}",        "m",     "From PARAMETERS — override if needed"),
+]
+for row_n, lab, dft, unit, note in basis_fields:
+    lbl(ws_tr, row_n, 1, lab, bold=True, ind=1)
+    ws_tr.merge_cells(start_row=row_n, start_column=1, end_row=row_n, end_column=4)
+    if dft and dft.startswith('='):
+        frm(ws_tr, row_n, 5, dft, '0.00', lnk=True)
+    else:
+        inp(ws_tr, row_n, 5, None)
+    lbl(ws_tr, row_n, 6, unit, sz=9)
+    if note:
+        lbl(ws_tr, row_n, 7, note, sz=9, wrap=True)
+        ws_tr.merge_cells(start_row=row_n, start_column=7, end_row=row_n, end_column=12)
+    ws_tr.row_dimensions[row_n].height = 18
+
+ws_tr.row_dimensions[11].height = 8
+
+# Instructions
+inst = ws_tr.cell(row=12, column=1, value=(
+    "ℹ  HOW TO USE:  "
+    "(1) Enter segment data below — From/To Node names, Length, Elevations, and Flow Q.  "
+    "(2) OD and PN Rating auto-selected via AGGREGATE formula from PIPE_DB — no manual lookup needed.  "
+    "(3) HGL chains automatically: Segment 1 start = Supply HGL above; each subsequent start = previous end (col T).  "
+    "(4) BRANCHES: override HGL Start (col I) by typing =T{upstream_row} to link to the branch junction.  "
+    "(5) Adjust Flow Q where flow changes (e.g. at a distribution offtake).  "
+    "(6) Resize pipe by changing the Allowable S in the Design Basis above."))
+inst.font = FN(sz=9, it=True, c='595959'); inst.alignment = AL(h='left', w=True)
+ws_tr.merge_cells(f'A12:{get_column_letter(NC_TR)}12')
+ws_tr.row_dimensions[12].height = 54
+
+ws_tr.row_dimensions[13].height = 8
+
+# Status key
+subhdr(ws_tr, 14, "STATUS KEY:", 1, 4)
+for ci, (txt, bg, fg) in enumerate([
+    ("✓ OK",           C_OKBG, C_OKFG),
+    ("⚠ LOW VELOCITY", C_WRNBG,C_WRNFG),
+    ("⚠ HIGH VELOCITY",C_ERRBG,C_ERRFG),
+    ("⚠ LOW PRESSURE", C_ERRBG,C_ERRFG),
+    ("⚠ SIZE N/A",     C_ERRBG,C_ERRFG),
+], start=5):
+    c = ws_tr.cell(row=14, column=ci, value=txt)
+    c.font = FN(bold=True, c=fg, sz=9); c.fill = FL(bg); c.border = BD()
+ws_tr.row_dimensions[14].height = 18
+
+# Column headers
+col_hdr_row(ws_tr, 15, [
+    "#", "From\nNode", "To\nNode", "Length\n(m)", "From Elev\n(m ASL)", "To Elev\n(m ASL)",
+    "ΔElev\n(m)", "Flow Q\n(L/s)", "HGL Start\n(m ASL)", "Max Working\nPressure (m)",
+    "Auto\nPN Num", "Auto\nPN Rating", "Min D_req\n(mm)", "Auto OD\n(mm)", "Actual ID\n(mm)",
+    "Velocity\n(m/s)", "Friction\nhf (m)", "Minor\nLoss (m)", "Total\nLoss (m)",
+    "HGL End\n(m ASL)", "Pressure\nat End (m)", "Status"
+], 1, ht=42)
+
+TR_S = TR_R['SEG_S']; TR_E = TR_R['SEG_E']
+TR_Q_REF  = f"$E${TR_R['Q']}"
+TR_S_REF  = f"$E${TR_R['S']}"
+TR_HGL_REF = f"$E${TR_R['HGL']}"
+
+for i in range(15):
+    r = TR_S + i
+    D_c=f"D{r}"; E_c=f"E{r}"; F_c=f"F{r}"; H_c=f"H{r}"
+    I_c=f"I{r}"; J_c=f"J{r}"; K_c=f"K{r}"; M_c=f"M{r}"
+    N_c=f"N{r}"; O_c=f"O{r}"; P_c=f"P{r}"; Q_c=f"Q{r}"
+    R_c=f"R{r}"; S_c=f"S{r}"; T_c=f"T{r}"; U_c=f"U{r}"
+
+    ws_tr.cell(row=r, column=1, value=i+1).alignment = AL()
+    ws_tr.cell(row=r, column=1).border = BD()
+    ws_tr.row_dimensions[r].height = 18
+
+    inp(ws_tr, r, 2)              # From Node
+    inp(ws_tr, r, 3)              # To Node
+    inp(ws_tr, r, 4, fmt='0.0')   # Length (m)
+    inp(ws_tr, r, 5, fmt='0.00')  # From Elevation
+    inp(ws_tr, r, 6, fmt='0.00')  # To Elevation
+
+    # Col 7: ΔElev
+    frm(ws_tr, r, 7, f'=IF(OR({E_c}="",{F_c}=""),"",{F_c}-{E_c})', '0.00')
+
+    # Col 8: Flow Q — first segment links to design flow; rest are inputs
+    if i == 0:
+        c8 = ws_tr.cell(row=r, column=8, value=TR_Q_REF)
+        c8.font = FN(c=C_LINK); c8.fill = FL(C_INP)
+        c8.alignment = AL(); c8.border = BD(); c8.number_format = '0.00'
+    else:
+        inp(ws_tr, r, 8, fmt='0.00')
+
+    # Col 9: HGL Start — first segment = supply HGL; rest chain from prev segment's HGL End (col T)
+    if i == 0:
+        frm(ws_tr, r, 9, f"={TR_HGL_REF}", '0.00', lnk=True)
+    else:
+        frm(ws_tr, r, 9, f"=IFERROR(T{r-1},\"\")", '0.00', lnk=True)
+
+    # Col 10: Max working pressure = HGL_start − min(From, To Elevation)
+    frm(ws_tr, r, 10, f'=IF(OR({E_c}="",{I_c}=""),"",IFERROR({I_c}-MIN({E_c},{F_c}),0))', '0.1')
+
+    # Col 11: Auto PN number (from max pressure)
+    frm(ws_tr, r, 11, F_PN_num(f"J{r}"))
+    # Col 12: PN label
+    frm(ws_tr, r, 12, F_PN_lbl(f"K{r}"))
+    # Col 13: Min D_req
+    frm(ws_tr, r, 13, F_Dreq(H_c, TR_S_REF, 'VMAXT'), '0.1')
+    # Col 14: Auto OD
+    frm(ws_tr, r, 14, F_OD(M_c, K_c, H_c), '0')
+    # Col 15: Actual ID
+    frm(ws_tr, r, 15, F_ID(N_c, K_c), '0.00')
+    # Col 16: Velocity
+    frm(ws_tr, r, 16, F_VEL(H_c, O_c), '0.000')
+    # Col 17: Friction loss
+    frm(ws_tr, r, 17, F_HF(H_c, O_c, D_c), '0.000')
+    # Col 18: Minor loss
+    frm(ws_tr, r, 18, F_ML(f"Q{r}"), '0.000')
+    # Col 19: Total loss
+    frm(ws_tr, r, 19, F_TL(f"Q{r}", f"R{r}"), '0.000')
+    # Col 20: HGL End
+    frm(ws_tr, r, 20, F_HGL_E(I_c, f"S{r}"), '0.00', lnk=True)
+    # Col 21: Pressure at end node
+    frm(ws_tr, r, 21, F_PRESS(T_c, F_c), '0.00')
+    # Col 22: Status
+    frm(ws_tr, r, 22, F_STATUS(f"P{r}", U_c, N_c, 'VMAXT', 'VMINT', 'RRES'))
+
+# Totals row
+TOT_r = TR_R['TOT']
+ws_tr.cell(row=TOT_r, column=1, value="TOTALS").font = FN(bold=True)
+ws_tr.cell(row=TOT_r, column=1).fill = FL(C_TOTBG); ws_tr.cell(row=TOT_r, column=1).border = BD()
+ws_tr.merge_cells(start_row=TOT_r, start_column=1, end_row=TOT_r, end_column=3)
+for col, L in [(4,'D'),(17,'Q'),(18,'R'),(19,'S')]:
+    tot(ws_tr, TOT_r, col, f'=IFERROR(SUM({L}{TR_S}:{L}{TR_E}),0)', '0.000')
+for col in range(1, NC_TR+1):
+    c = ws_tr.cell(row=TOT_r, column=col)
+    if not c.value: c.fill = FL(C_TOTBG); c.border = BD()
+ws_tr.row_dimensions[TOT_r].height = 20
+ws_tr.row_dimensions[TOT_r+1].height = 8
+
+# Hydraulic summary
+SUM_r = TR_R['SUM_HDR']
+subhdr(ws_tr, SUM_r, "HYDRAULIC SUMMARY", 1, 12)
+ws_tr.merge_cells(f'A{SUM_r}:L{SUM_r}')
+for j, (lab, fm, unit) in enumerate([
+    ("Total Pipeline Length",          f"=IFERROR(SUM(D{TR_S}:D{TR_E}),0)",  "m"),
+    ("Total Friction Head Loss",        f"=IFERROR(SUM(Q{TR_S}:Q{TR_E}),0)",  "m"),
+    ("Total Minor Head Loss",           f"=IFERROR(SUM(R{TR_S}:R{TR_E}),0)",  "m"),
+    ("Total Head Loss (friction+minor)",f"=IFERROR(SUM(S{TR_S}:S{TR_E}),0)",  "m"),
+    ("HGL at Supply Point",             f"={TR_HGL_REF}",                      "m ASL"),
+    ("HGL at Destination",              f"=IFERROR(T{TR_E},\"-\")",            "m ASL"),
+    ("Residual Head at Destination",    f"=IFERROR(U{TR_E},\"-\")",            "m"),
+    ("Required Minimum Residual Head",  f"=$E${TR_R['RES']}",                  "m"),
+    ("Design Check",
+     f'=IF(ISNUMBER(U{TR_E}),IF(U{TR_E}>=$E${TR_R["RES"]},"✓ SUFFICIENT HEAD","⚠ INSUFFICIENT HEAD — REVISE DESIGN"),"-")',
+     ""),
+]):
+    r = SUM_r + 1 + j
+    lbl(ws_tr, r, 1, lab, bold=True, ind=1)
+    ws_tr.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
+    frm(ws_tr, r, 5, fm, '0.00', lnk=True)
+    lbl(ws_tr, r, 6, unit, sz=9)
+    ws_tr.row_dimensions[r].height = 18
+
+ws_tr.freeze_panes = 'D1'   # freeze cols A–C (seg#, From/To node) for horizontal scroll
+cw(ws_tr, {'A':4,'B':12,'C':12,'D':10,'E':12,'F':12,'G':9,'H':9,
+            'I':13,'J':13,'K':9,'L':11,'M':11,'N':11,'O':10,
+            'P':11,'Q':12,'R':11,'S':11,'T':12,'U':11,'V':16})
+
+print("✅ Stage 4 complete — TRANSMISSION sheet built.")
+print(f"   Segments: rows {TR_R['SEG_S']}–{TR_R['SEG_E']} (15 segments, expandable)")
