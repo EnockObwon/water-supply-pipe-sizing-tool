@@ -1,0 +1,241 @@
+# STAGE 3 — TDH_CALC SHEET
+# Total Dynamic Head: production well → storage reservoir
+# Run AFTER Stage 2.
+
+ws_td = wb.create_sheet("TDH_CALC")
+ws_td.sheet_view.showGridLines = False
+NC = 19   # columns A–S
+
+hdr(ws_td, 1, "TOTAL DYNAMIC HEAD (TDH) CALCULATION", 1, NC, sz=13, ht=30)
+ws_td.merge_cells(f'A1:{get_column_letter(NC)}1')
+ws_td.cell(row=2, column=1).value = (
+    "Production Well  →  Storage Reservoir  |  Hazen-Williams  |  HDPE PE100  |  Uganda WSS DM 2nd Ed.")
+ws_td.cell(row=2, column=1).font = FN(sz=10, it=True, c=C_MED)
+ws_td.merge_cells(f'A2:{get_column_letter(NC)}2')
+ws_td.row_dimensions[2].height = 18; ws_td.row_dimensions[3].height = 8
+
+# SECTION 1: SITE & WELL DATA
+subhdr(ws_td, 4, "SECTION 1 — SITE & WELL DATA  (enter survey / pump test data)", 1, NC)
+ws_td.merge_cells(f'A4:{get_column_letter(NC)}4')
+
+site_data = [
+    # (row_key, label,                                    default,               unit,      note)
+    ('GE',  "Ground Elevation at Wellhead",               None,                  "m ASL",   "From topographic survey"),
+    ('SWL', "Static Water Level (SWL)",                   None,                  "m bgl",   "Measured with pump off"),
+    ('PWL', "Pumping / Dynamic Water Level (PWL)",        None,                  "m bgl",   "From pump test at design flow"),
+    ('PSD', "Pump Setting Depth",                         None,                  "m bgl",   "Depth of pump intake below ground surface"),
+    ('Q',   "Design Flow Rate  Q",                        None,                  "L/s",     "Pump design capacity"),
+    ('PH',  "Pump Operating Hours per Day",               f"={p('PUMPH')}",      "hr/day",  "From PARAMETERS — adjust if needed"),
+    ('RF',  "Reservoir Floor Elevation",                  None,                  "m ASL",   "From topographic survey"),
+    ('RH',  "Reservoir High Water Level (HWL)",           None,                  "m ASL",   "Full storage level"),
+    ('RM',  "Required Minimum Water Level in Reservoir",  None,                  "m ASL",   "Floor elevation + minimum operational storage depth"),
+]
+for rk, lab, dft, unit, note in site_data:
+    r = TDH_R[rk]
+    lbl(ws_td, r, 1, lab, bold=True, ind=1)
+    ws_td.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
+    if dft and dft.startswith('='):
+        frm(ws_td, r, 5, dft, '0.0', lnk=True)
+    else:
+        inp(ws_td, r, 5, None, '0.00')
+    lbl(ws_td, r, 6, unit, sz=9)
+    lbl(ws_td, r, 7, note, sz=9, wrap=True)
+    ws_td.merge_cells(start_row=r, start_column=7, end_row=r, end_column=NC)
+    ws_td.row_dimensions[r].height = 18
+
+ws_td.row_dimensions[14].height = 8
+
+# SECTION 2: DERIVED ELEVATIONS
+subhdr(ws_td, 15, "SECTION 2 — DERIVED ELEVATIONS", 1, NC)
+ws_td.merge_cells(f'A15:{get_column_letter(NC)}15')
+
+GE=TDH_R['GE']; SWL=TDH_R['SWL']; PWL=TDH_R['PWL']; RH=TDH_R['RH']
+derived = [
+    (TDH_R['DWL'],    "Elevation of Pumping Water Level",
+     f"=IFERROR(E{GE}-E{PWL},\"\")",                               "m ASL"),
+    (TDH_R['SWL_E'],  "Elevation of Static Water Level",
+     f"=IFERROR(E{GE}-E{SWL},\"\")",                               "m ASL"),
+    (TDH_R['SH'],     "Minimum Static Head Required  (HWL – Pumping WL Elevation)",
+     f"=IFERROR(E{RH}-(E{GE}-E{PWL}),\"\")",                       "m"),
+]
+for r, lab, fm, unit in derived:
+    lbl(ws_td, r, 1, lab, bold=True, ind=2)
+    ws_td.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
+    frm(ws_td, r, 5, fm, '0.00', bg=C_TOTBG)
+    lbl(ws_td, r, 6, unit, sz=9)
+    ws_td.row_dimensions[r].height = 18
+
+ws_td.row_dimensions[19].height = 8
+
+# SECTION 3: RISING MAIN SEGMENTS
+subhdr(ws_td, 20, "SECTION 3 — RISING MAIN / DISCHARGE PIPELINE SEGMENTS", 1, NC)
+ws_td.merge_cells(f'A20:{get_column_letter(NC)}20')
+inst_c = ws_td.cell(row=21, column=1, value=(
+    "Enter each segment from pump level to reservoir. "
+    "Segment 1 = pump column (From Elev = Ground Elev – Pump Setting Depth; To Elev = Ground Elev at wellhead). "
+    "Subsequent segments = surface pipeline to reservoir. "
+    "Allow. S (col H) defaults to transmission standard — override per segment if needed. "
+    "OD, PN Rating, and ID are auto-selected from PIPE_DB.  Rows with Length = 0 are skipped."))
+inst_c.font = FN(sz=9, it=True, c='595959'); inst_c.alignment = AL(h='left', w=True)
+ws_td.merge_cells(f'A21:{get_column_letter(NC)}21'); ws_td.row_dimensions[21].height = 42
+
+col_hdr_row(ws_td, 22, [
+    "#", "Segment Description", "Length\n(m)", "From Elev\n(m ASL)", "To Elev\n(m ASL)",
+    "ΔElev\n(m)", "Q\n(L/s)", "Allow. S\n(m/km)",
+    "Min D_req\n(mm)", "Auto OD\n(mm)", "Auto PN\nNum", "Auto PN\nRating", "Actual ID\n(mm)",
+    "Velocity\n(m/s)", "Friction\nhf (m)", "Minor\nLoss (m)", "Total\nLoss (m)",
+    "Max Press.\nIn Seg (m)", "Status"
+], 1, ht=42)
+
+SEG_S = TDH_R['SEG_S']; SEG_E = TDH_R['SEG_E']
+Q_REF = f"$E${TDH_R['Q']}"; RH_REF = f"$E${TDH_R['RH']}"
+
+SEG_DESCS = ["Pump Column (inside well casing)",
+             "Surface Rising Main — Segment 1",
+             "Surface Rising Main — Segment 2",
+             "Surface Rising Main — Segment 3"] + [""] * 8
+
+for i in range(12):
+    r = SEG_S + i
+    L_c = f"C{r}"; D_c = f"D{r}"; E_c = f"E{r}"; G_c = f"G{r}"; H_c = f"H{r}"
+    I_c = f"I{r}"; J_c = f"J{r}"; K_c = f"K{r}"; M_c = f"M{r}"
+    N_c = f"N{r}"; O_c = f"O{r}"; P_c = f"P{r}"; R_c = f"R{r}"
+
+    ws_td.cell(row=r, column=1, value=i+1).alignment = AL()
+    ws_td.cell(row=r, column=1).border = BD()
+    ws_td.row_dimensions[r].height = 18
+
+    inp(ws_td, r, 2, SEG_DESCS[i] or None)   # Description
+    inp(ws_td, r, 3, None, '0.0')             # Length (m)
+    inp(ws_td, r, 4, None, '0.00')            # From Elevation
+    inp(ws_td, r, 5, None, '0.00')            # To Elevation
+
+    # Col 6: ΔElev
+    frm(ws_td, r, 6,  f'=IF(OR({D_c}="",{E_c}=""),"",{E_c}-{D_c})', '0.00')
+    # Col 7: Q — links to design flow (user can override)
+    c7 = ws_td.cell(row=r, column=7, value=Q_REF)
+    c7.font = FN(c=C_LINK); c7.fill = FL(C_INP)
+    c7.alignment = AL(); c7.border = BD(); c7.number_format = '0.00'
+    # Col 8: Allowable S — defaults to PARAMETERS, user can override per segment
+    c8 = ws_td.cell(row=r, column=8, value=f"={p('STRANS')}")
+    c8.font = FN(c=C_LINK); c8.fill = FL(C_INP)
+    c8.alignment = AL(); c8.border = BD(); c8.number_format = '0.0'
+
+    # Col 9:  Min D_req (H-W + velocity)
+    frm(ws_td, r,  9, F_Dreq(G_c, H_c, 'VMAXT'), '0.0')
+    # Col 18: Max pressure in segment — needed BEFORE PN selection
+    frm(ws_td, r, 18, f'=IF(OR({D_c}="",{E_c}=""),"",IFERROR({RH_REF}-MIN({D_c},{E_c}),0))', '0.0')
+    # Col 11: Auto PN num (based on col 18)
+    frm(ws_td, r, 11, F_PN_num(f"R{r}"))
+    # Col 10: Auto OD
+    frm(ws_td, r, 10, F_OD(I_c, K_c, G_c), '0')
+    # Col 12: PN label
+    frm(ws_td, r, 12, F_PN_lbl(f"K{r}"))
+    # Col 13: Actual ID
+    frm(ws_td, r, 13, F_ID(J_c, K_c), '0.00')
+    # Col 14: Velocity
+    frm(ws_td, r, 14, F_VEL(G_c, f"M{r}"), '0.000')
+    # Col 15: Friction loss hf
+    frm(ws_td, r, 15, F_HF(G_c, f"M{r}", L_c), '0.000')
+    # Col 16: Minor loss
+    frm(ws_td, r, 16, F_ML(f"O{r}"), '0.000')
+    # Col 17: Total loss
+    frm(ws_td, r, 17, F_TL(f"O{r}", f"P{r}"), '0.000')
+    # Col 19: Status (pressure check: reservoir HWL vs To Elevation)
+    frm(ws_td, r, 19, F_STATUS(f"N{r}", f"IFERROR({RH_REF}-{E_c},0)", J_c, 'VMAXT', 'VMINT', 'RRES'))
+
+# Totals row
+T_row = TDH_R['TOT']
+ws_td.cell(row=T_row, column=1, value="TOTALS").font = FN(bold=True)
+ws_td.cell(row=T_row, column=1).fill = FL(C_TOTBG); ws_td.cell(row=T_row, column=1).border = BD()
+ws_td.merge_cells(start_row=T_row, start_column=1, end_row=T_row, end_column=2)
+for col, L in [(3,'C'),(15,'O'),(16,'P'),(17,'Q')]:
+    tot(ws_td, T_row, col, f'=IFERROR(SUM({L}{SEG_S}:{L}{SEG_E}),0)', '0.000')
+for col in range(1, NC+1):
+    c = ws_td.cell(row=T_row, column=col)
+    if not c.value: c.fill = FL(C_TOTBG); c.border = BD()
+ws_td.row_dimensions[T_row].height = 20
+ws_td.row_dimensions[T_row+1].height = 8
+
+# SECTION 4: TDH SUMMARY
+SH_r = TDH_R['SUM_HDR']
+subhdr(ws_td, SH_r, "SECTION 4 — TOTAL DYNAMIC HEAD SUMMARY", 1, NC)
+ws_td.merge_cells(f'A{SH_r}:{get_column_letter(NC)}{SH_r}')
+
+SH_c  = TDH_R['SH_COMP']; FL_c = TDH_R['FL_COMP']
+ML_c  = TDH_R['ML_COMP']; VH_c = TDH_R['VH_COMP']
+GE_r  = TDH_R['GE'];      PWL_r = TDH_R['PWL']
+
+for row_n, lab, fm in [
+    (SH_c, "1.  Static Head  (Reservoir HWL – Pumping WL Elevation)",
+           f"=IFERROR(E{RH}-(E{GE_r}-E{PWL_r}),0)"),
+    (FL_c, "2.  Total Pipeline Friction Losses",
+           f"=IFERROR(SUM(O{SEG_S}:O{SEG_E}),0)"),
+    (ML_c, "3.  Total Minor Losses  (fittings, bends, valves, entrance & exit)",
+           f"=IFERROR(SUM(P{SEG_S}:P{SEG_E}),0)"),
+    (VH_c, "4.  Velocity Head at Discharge  (V²/2g, last active segment)",
+           f"=IFERROR(LOOKUP(2,1/(G{SEG_S}:G{SEG_E}>0),N{SEG_S}:N{SEG_E})^2/(2*9.81),0)"),
+]:
+    lbl(ws_td, row_n, 1, lab, bold=True, ind=2)
+    ws_td.merge_cells(start_row=row_n, start_column=1, end_row=row_n, end_column=4)
+    frm(ws_td, row_n, 5, fm, '0.00', bg=C_TOTBG)
+    lbl(ws_td, row_n, 6, "m", sz=9)
+    ws_td.row_dimensions[row_n].height = 20
+
+ws_td.row_dimensions[VH_c+1].height = 10
+
+# TDH result — highlighted row
+TDH_row = TDH_R['TDH']
+ws_td.merge_cells(start_row=TDH_row, start_column=1, end_row=TDH_row, end_column=4)
+c1 = ws_td.cell(row=TDH_row, column=1, value="TOTAL DYNAMIC HEAD  (TDH)")
+c1.font = Font(name='Calibri', size=13, bold=True, color='FFFFFF')
+c1.fill = FL(C_DARK); c1.alignment = AL(h='center'); c1.border = BD('medium')
+c2 = ws_td.cell(row=TDH_row, column=5,
+                value=f"=IFERROR(E{SH_c}+E{FL_c}+E{ML_c}+E{VH_c},0)")
+c2.font = Font(name='Calibri', size=16, bold=True, color='FFFFFF')
+c2.fill = FL(C_DARK); c2.alignment = AL(); c2.border = BD('medium'); c2.number_format = '0.00'
+c3 = ws_td.cell(row=TDH_row, column=6, value="m")
+c3.font = FN(bold=True, sz=12); c3.border = BD('medium')
+ws_td.row_dimensions[TDH_row].height = 32
+ws_td.row_dimensions[TDH_row+1].height = 10
+
+# SECTION 5: PUMP REQUIREMENTS 
+PH_r = TDH_R['PUMP_HDR']
+subhdr(ws_td, PH_r, "SECTION 5 — PUMP REQUIREMENTS", 1, NC)
+ws_td.merge_cells(f'A{PH_r}:{get_column_letter(NC)}{PH_r}')
+
+P_Q    = TDH_R['P_Q'];   P_TDH  = TDH_R['P_TDH']
+P_PEFF = TDH_R['P_PEFF']; P_MEFF = TDH_R['P_MEFF']
+P_HPOW = TDH_R['P_HPOW']; P_MPOW = TDH_R['P_MPOW']
+P_VOL  = TDH_R['P_VOL']
+
+pump_fields = [
+    (P_Q,    "Design Flow Rate",                   f"=E{TDH_R['Q']}",       "L/s",    None,   True),
+    (P_TDH,  "Total Dynamic Head  (TDH)",          f"=E{TDH_row}",          "m",      None,   True),
+    (P_PEFF, "Pump Efficiency  η_pump",             0.65,                    "-",    '0.00',   False),
+    (P_MEFF, "Motor Efficiency  η_motor",           0.90,                    "-",    '0.00',   False),
+    (P_HPOW, "Hydraulic Power  P_hyd = ρgQH/1000",
+             f"=IFERROR(9.81*E{P_Q}/1000*E{P_TDH},0)",                      "kW",   '0.00',   True),
+    (P_MPOW, "Motor / Input Power  P_motor = P_hyd / (η_pump × η_motor)",
+             f"=IFERROR(E{P_HPOW}/(E{P_PEFF}*E{P_MEFF}),0)",               "kW",   '0.00',   True),
+    (P_VOL,  "Daily Volume Supplied  (at design flow × pump hours)",
+             f"=IFERROR(E{P_Q}/1000*3600*E{TDH_R['PH']},0)",               "m³/day",'0.0',   True),
+]
+for row_n, lab, val, unit, fmt, is_formula in pump_fields:
+    lbl(ws_td, row_n, 1, lab, bold=True, ind=2)
+    ws_td.merge_cells(start_row=row_n, start_column=1, end_row=row_n, end_column=4)
+    if is_formula:
+        frm(ws_td, row_n, 5, val, fmt or '0.00', lnk=True)
+    else:
+        inp(ws_td, row_n, 5, val, fmt)
+    lbl(ws_td, row_n, 6, unit, sz=9)
+    ws_td.row_dimensions[row_n].height = 18
+
+# No freeze panes for TDH_CALC — vertical form layout, sections scroll naturally
+cw(ws_td, {'A':4,'B':24,'C':10,'D':12,'E':12,'F':8,'G':9,'H':11,
+            'I':12,'J':11,'K':10,'L':12,'M':10,'N':11,
+            'O':12,'P':11,'Q':11,'R':13,'S':14})
+
+print("✅ Stage 3 complete — TDH_CALC sheet built.")
+print(f"   TDH result cell: TDH_CALC!E{TDH_R['TDH']}")
+print(f"   Motor power cell: TDH_CALC!E{TDH_R['P_MPOW']}")
